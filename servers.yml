@@ -57,20 +57,23 @@ Resources:
             Action:
               - 'sts:AssumeRole'
       Path: '/'
-      Policies:
-        - PolicyName: 'root'
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: 'Allow'
-                Action: '*'
-                Resource: '*'
-  ProfileApp:
+  AppPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AppPolicy
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action: "*"
+          Resource: "*"
+      Roles:
+      - Ref: AppRole
+  AppProfile:
     Type: 'AWS::IAM::InstanceProfile'
     Properties:
       Path: '/'
       Roles:
-        - Ref: 'AppRole'
+        - Ref: AppRole
 
   WebAppLaunchConfig:
       Type: AWS::AutoScaling::LaunchConfiguration
@@ -78,26 +81,36 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            yum update -y
-            yum install -y httpd
-            systemctl start httpd
-            systemctl enable httpd
-            wget -P ../../var/www/html  https://udacity-webapp.s3-us-west-2.amazonaws.com/index.html
-        ImageId: ami-07b4f3c02c7f83d59          
-        IamInstanceProfile: !Ref ProfileApp
+            apt-get -y  update
+            apt-get -y install unzip awscli
+            apt-get -y install apache2
+
+            systemctl start apache2
+
+            cd /var/www/html
+            aws s3 cp s3://udacity-webapp/code.tgz .
+            tar -xzvf code.tgz
+            chown -R www-data:www-data .
+        ImageId: ami-07b4f3c02c7f83d59
+        IamInstanceProfile:
+          Ref: AppProfile
         SecurityGroups:
-        - Ref: WebServerSecurityGroup
-        InstanceType: t3.small
+          - Ref: WebServerSecurityGroup
+        InstanceType: t2.micro
         BlockDeviceMappings:
-        - DeviceName: "/dev/sdk"
-          Ebs:
-            VolumeSize: '10'
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: 10
+              VolumeType: gp2
             
   WebAppGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
+      TargetGroupARNs:
+        - !Ref WebAppTargetGroup
       VPCZoneIdentifier:
-        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-NETS"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV1-NET"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV2-NET"
       LaunchConfigurationName:
         Ref: WebAppLaunchConfig
       MinSize: '2'
@@ -109,20 +122,20 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Subnets:
-        - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV1-NET"
-        - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV2-NET"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-NET"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-NET"
       SecurityGroups:
         - Ref: LBSecGroup
 
   Listener:
       Type: AWS::ElasticLoadBalancingV2::Listener
       Properties:
-          DefaultActions:
-            - Type: forward
-              TargetGroupArn: !Ref WebAppTargetGroup
-          LoadBalancerArn: !Ref WebAppLB
-          Port: 80
-          Protocol: HTTP
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: !Ref WebAppTargetGroup
+        LoadBalancerArn: !Ref WebAppLB
+        Port: 80
+        Protocol: HTTP
 
   ALBListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
@@ -139,6 +152,7 @@ Resources:
   WebAppTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
+      TargetType: instance
       HealthCheckIntervalSeconds: 35
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
